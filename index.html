@@ -36,13 +36,9 @@ const PASSWORD = "PASS123456";
 const subTopicGps = "ev/gps";
 const subTopicState = "ev/state";
 const pubTopicCmd = "ev/cmd";
-const clientId = "web_ev_" + Math.random().toString(36).slice(2);
-
-// 公网HTTPS环境专用 WSS连接
-const client = mqtt.connect(`wss://broker.emqx.io:8884/mqtt`,{
-  clientId: clientId,
-  reconnectPeriod:3000
-});
+const MQTT_WSS_URL = "wss://broker.emqx.io:8884/mqtt";
+let client = null;
+let isReconnecting = false;
 // ========================================================
 const mqttStatusDom = document.getElementById("mqttStatus");
 const devStateDom = document.getElementById("devState");
@@ -58,56 +54,81 @@ function addLog(text){
   logBoxDom.scrollTop = logBoxDom.scrollHeight;
 }
 
-// MQTT连接成功回调
-client.on('connect',()=>{
-  mqttStatusDom.innerText = "MQTT状态：✅已连接(WSS)";
-  addLog("MQTT服务器连接成功(WSS)");
-  //订阅GPS和设备状态主题
-  client.subscribe(subTopicGps);
-  client.subscribe(subTopicState);
-  btnStart.disabled = false;
-  btnStop.disabled = false;
-});
-
-// 连接断开回调
-client.on('close',()=>{
-  mqttStatusDom.innerText = "MQTT状态：❌连接断开";
-  addLog("MQTT连接断开");
-  devStateDom.innerText = "电动车状态：未知，连接断开";
-  btnStart.disabled = true;
-  btnStop.disabled = true;
-});
-
-// 错误回调
-client.on('error',(err)=>{
-  addLog("MQTT错误:" + err.message);
-});
-
-// 收到MQTT消息
-client.on('message',(topic,payload)=>{
-  const msg = payload.toString();
-  if(topic === subTopicGps){
-    gpsInfoDom.innerText = "GPS位置：" + msg;
-    addLog("收到GPS数据:" + msg);
-  }else if(topic === subTopicState){
-    if(msg === "ON"){
-      devStateDom.innerText = "电动车状态：✅已启动";
-    }else if(msg === "OFF"){
-      devStateDom.innerText = "电动车状态：❌已关闭";
-    }
-    addLog("收到设备状态:" + msg);
+// 创建MQTT客户端
+function connectMqtt(){
+  if(client){
+    client.end(true); // 强制销毁旧连接
+    client = null;
   }
-});
+  const clientId = "web_ev_" + Math.random().toString(36).slice(2);
+  client = mqtt.connect(MQTT_WSS_URL,{
+    clientId: clientId,
+    reconnectPeriod: 5000,  // 拉长重连间隔，避免频繁连接被服务器封禁
+    connectTimeout: 8000
+  });
+
+  // 连接成功回调
+  client.on('connect',()=>{
+    isReconnecting = false;
+    mqttStatusDom.innerText = "MQTT状态：✅已连接(WSS)";
+    addLog("MQTT服务器连接成功(WSS)");
+    //订阅GPS和设备状态主题
+    client.subscribe(subTopicGps);
+    client.subscribe(subTopicState);
+    btnStart.disabled = false;
+    btnStop.disabled = false;
+  });
+
+  // 连接断开回调
+  client.on('close',()=>{
+    mqttStatusDom.innerText = "MQTT状态：❌连接断开";
+    addLog("MQTT连接断开");
+    devStateDom.innerText = "电动车状态：未知，连接断开";
+    btnStart.disabled = true;
+    btnStop.disabled = true;
+    if(!isReconnecting){
+      isReconnecting = true;
+      addLog("等待5s后尝试重连...");
+      setTimeout(connectMqtt,5000);
+    }
+  });
+
+  // 错误回调
+  client.on('error',(err)=>{
+    addLog("MQTT错误:" + err.message);
+  });
+
+  // 收到MQTT消息
+  client.on('message',(topic,payload)=>{
+    const msg = payload.toString();
+    if(topic === subTopicGps){
+      gpsInfoDom.innerText = "GPS位置：" + msg;
+      addLog("收到GPS数据:" + msg);
+    }else if(topic === subTopicState){
+      if(msg === "ON"){
+        devStateDom.innerText = "电动车状态：✅已启动";
+      }else if(msg === "OFF"){
+        devStateDom.innerText = "电动车状态：❌已关闭";
+      }
+      addLog("收到设备状态:" + msg);
+    }
+  });
+}
 
 // 下发控制指令
 function sendCmd(cmd){
-  if(!client.connected){
+  if(!client || !client.connected){
     alert("MQTT未连接，无法发送指令");
     return;
   }
   const payload = PASSWORD + ":" + cmd;
   client.publish(pubTopicCmd, payload);
   addLog("下发指令: " + cmd);
+}
+
+// 页面加载完成启动连接
+window.onload = function(){
+  connectMqtt();
 }
 </script>
 </body>
